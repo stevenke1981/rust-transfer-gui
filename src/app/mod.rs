@@ -8,21 +8,28 @@
 //! * status bar with connection state and transfer progress.
 
 mod dialog;
+mod drop_files;
 mod files;
+mod fonts;
 mod session;
 mod sidebar;
 mod terminal;
 mod theme;
 mod widgets;
 
+#[cfg(test)]
+mod tests;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::i18n::Language;
+
 use eframe::egui::{self, Color32, RichText, Vec2};
 
 use crate::common::human_bytes;
-use crate::config::{AuthMethod, Config, Protocol, SavedSession};
+use crate::config::{AuthMethod, Config, Protocol, SavedSession, Settings};
 use crate::worker::{Level, SessionCommand, TftpOp, Waker};
 use dialog::{DialogResult, SessionDialog};
 use files::PendingDelete;
@@ -40,7 +47,10 @@ pub struct TransferApp {
     selected_saved: Option<usize>,
     dialog: SessionDialog,
     pending_delete: Option<PendingDelete>,
+    pending_upload: Option<drop_files::PendingUpload>,
     show_settings: bool,
+    settings_draft: Settings,
+    cjk_fonts_available: bool,
     show_about: bool,
     notice: Option<(Level, String)>,
     waker: Waker,
@@ -49,11 +59,17 @@ pub struct TransferApp {
 
 impl TransferApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let ctx = cc.egui_ctx.clone();
-        let config = Config::load();
-        theme::apply(&cc.egui_ctx, config.settings.dark_mode);
+        Self::with_config(cc.egui_ctx.clone(), Config::load())
+    }
+
+    fn with_config(ctx: egui::Context, config: Config) -> Self {
+        config.settings.language.install(&ctx);
+        let cjk_fonts_available = fonts::install(&ctx);
+        theme::apply(&ctx, config.settings.dark_mode);
         Self {
             theme_applied: Some(config.settings.dark_mode),
+            settings_draft: config.settings.clone(),
+            cjk_fonts_available,
             config,
             tabs: Vec::new(),
             active: None,
@@ -62,6 +78,7 @@ impl TransferApp {
             selected_saved: None,
             dialog: SessionDialog::default(),
             pending_delete: None,
+            pending_upload: None,
             show_settings: false,
             show_about: false,
             notice: None,
@@ -76,8 +93,58 @@ impl TransferApp {
 
     fn save_config(&mut self) {
         match self.config.save() {
-            Ok(p) => self.notice = Some((Level::Info, format!("Saved settings to {}", p.display()))),
-            Err(e) => self.notice = Some((Level::Error, format!("Could not save settings: {e}"))),
+            Ok(p) => {
+                self.notice = Some((
+                    Level::Info,
+                    self.config
+                        .settings
+                        .language
+                        .format("Saved settings to {path}", &[("path", &p.display().to_string())]),
+                ))
+            }
+            Err(e) => {
+                self.notice = Some((
+                    Level::Error,
+                    self.config
+                        .settings
+                        .language
+                        .format("Could not save settings: {error}", &[("error", &e.to_string())]),
+                ))
+            }
+        }
+    }
+
+    fn open_settings(&mut self) {
+        self.settings_draft = self.config.settings.clone();
+        self.show_settings = true;
+    }
+
+    fn apply_settings(&mut self, ctx: &egui::Context, save: impl FnOnce(&Config) -> std::io::Result<PathBuf>) {
+        let mut candidate = self.config.clone();
+        candidate.settings = self.settings_draft.clone();
+        match save(&candidate) {
+            Ok(path) => {
+                self.config = candidate;
+                self.config.settings.language.install(ctx);
+                self.notice = Some((
+                    Level::Info,
+                    self.config
+                        .settings
+                        .language
+                        .format("Saved settings to {path}", &[("path", &path.display().to_string())]),
+                ));
+                self.show_settings = false;
+                ctx.request_repaint();
+            }
+            Err(error) => {
+                self.notice = Some((
+                    Level::Error,
+                    self.config
+                        .settings
+                        .language
+                        .format("Could not save settings: {error}", &[("error", &error.to_string())]),
+                ));
+            }
         }
     }
 
@@ -129,14 +196,15 @@ impl TransferApp {
     // ------------------------------------------------------------------ bars
 
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
+        let language = Language::from_context(ui.ctx());
         egui::MenuBar::new().ui(ui, |ui| {
-            ui.menu_button("Session", |ui| {
-                if ui.button("➕ New session…").clicked() {
+            ui.menu_button(language.text("Session"), |ui| {
+                if ui.button(language.text("➕ New session…")).clicked() {
                     self.dialog.open_new(Protocol::Ssh);
                     ui.close();
                 }
                 let has_active = self.active.is_some();
-                if ui.add_enabled(has_active, egui::Button::new("⟳ Reconnect")).clicked() {
+                if ui.add_enabled(has_active, egui::Button::new(language.text("⟳ Reconnect"))).clicked() {
                     if let Some(t) = self.active_tab()
                         && t.state() == ConnState::Disconnected
                     {
@@ -144,65 +212,65 @@ impl TransferApp {
                     }
                     ui.close();
                 }
-                if ui.add_enabled(has_active, egui::Button::new("⏏ Disconnect")).clicked() {
+                if ui.add_enabled(has_active, egui::Button::new(language.text("⏏ Disconnect"))).clicked() {
                     if let Some(t) = self.active_tab() {
                         t.disconnect();
                     }
                     ui.close();
                 }
-                if ui.add_enabled(has_active, egui::Button::new("✖ Close tab")).clicked() {
+                if ui.add_enabled(has_active, egui::Button::new(language.text("✖ Close tab"))).clicked() {
                     if let Some(id) = self.active {
                         self.close_tab(id);
                     }
                     ui.close();
                 }
                 ui.separator();
-                if ui.button("🚪 Quit").clicked() {
+                if ui.button(language.text("🚪 Quit")).clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
-            ui.menu_button("Tools", |ui| {
-                if ui.button("🧹 Clear terminal / log of current tab").clicked() {
+            ui.menu_button(language.text("Tools"), |ui| {
+                if ui.button(language.text("🧹 Clear terminal / log of current tab")).clicked() {
                     if let Some(t) = self.active_tab() {
                         t.term.lines.clear();
                         t.log.clear();
                     }
                     ui.close();
                 }
-                if ui.button("🔄 Reload saved sessions").clicked() {
+                if ui.button(language.text("🔄 Reload saved sessions")).clicked() {
                     self.config.sessions = Config::load().sessions;
                     ui.close();
                 }
-                if ui.button("⚙ Settings…").clicked() {
-                    self.show_settings = true;
+                if ui.button(language.text("⚙ Settings…")).clicked() {
+                    self.open_settings();
                     ui.close();
                 }
             });
-            ui.menu_button("View", |ui| {
-                if ui.checkbox(&mut self.config.settings.show_sidebar, "Show sidebar").changed() {
+            ui.menu_button(language.text("View"), |ui| {
+                if ui.checkbox(&mut self.config.settings.show_sidebar, language.text("Show sidebar")).changed() {
                     self.save_config();
                 }
-                if ui.checkbox(&mut self.config.settings.dark_mode, "Dark theme").changed() {
+                if ui.checkbox(&mut self.config.settings.dark_mode, language.text("Dark theme")).changed() {
                     self.save_config();
                 }
                 ui.separator();
-                if ui.button("⭐ Sessions panel").clicked() {
+                if ui.button(language.text("⭐ Sessions panel")).clicked() {
                     self.sidebar_tab = SidebarTab::Sessions;
                     self.config.settings.show_sidebar = true;
                     ui.close();
                 }
-                if ui.button("📁 Files panel").clicked() {
+                if ui.button(language.text("📁 Files panel")).clicked() {
                     self.sidebar_tab = SidebarTab::Files;
                     self.config.settings.show_sidebar = true;
                     ui.close();
                 }
-                if ui.button("🏠 Home tab").clicked() {
+                if ui.button(language.text("🏠 Home tab")).clicked() {
                     self.active = None;
                     ui.close();
                 }
             });
-            ui.menu_button("Help", |ui| {
-                if ui.button("ℹ About…").clicked() {
+            ui.menu_button(language.text("Help"), |ui| {
+                if ui.button(language.text("ℹ About…")).clicked() {
                     self.show_about = true;
                     ui.close();
                 }
@@ -211,69 +279,92 @@ impl TransferApp {
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
-        let size = Vec2::new(74.0, 56.0);
+        let language = Language::from_context(ui.ctx());
+        let size = Vec2::new(88.0, 56.0);
         let can_disc = self.active_tab().is_some_and(|t| t.worker.is_some());
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             let b = |ui: &mut egui::Ui, icon: &str, label: &str, color: Color32, enabled: bool, tip: &str| {
                 widgets::icon_button(ui, icon, label, color, size, false, enabled).on_hover_text(tip).clicked()
             };
-            if b(ui, "🖥", "Session", Color32::from_rgb(90, 170, 255), true, "New session (Ctrl+N)") {
+            if b(
+                ui,
+                "🖥",
+                language.text("Session"),
+                Color32::from_rgb(90, 170, 255),
+                true,
+                language.text("New session (Ctrl+N)"),
+            ) {
                 self.dialog.open_new(Protocol::Ssh);
             }
-            if b(ui, "📂", "SFTP", Color32::from_rgb(255, 180, 60), true, "New SFTP session") {
+            if b(ui, "📂", "SFTP", Color32::from_rgb(255, 180, 60), true, language.text("New SFTP session")) {
                 self.dialog.open_new(Protocol::Sftp);
             }
-            if b(ui, "🌐", "FTP", Color32::from_rgb(110, 210, 120), true, "New FTP session") {
+            if b(ui, "🌐", "FTP", Color32::from_rgb(110, 210, 120), true, language.text("New FTP session")) {
                 self.dialog.open_new(Protocol::Ftp);
             }
-            if b(ui, "📡", "TFTP", Color32::from_rgb(200, 140, 255), true, "New TFTP session") {
+            if b(ui, "📡", "TFTP", Color32::from_rgb(200, 140, 255), true, language.text("New TFTP session")) {
                 self.dialog.open_new(Protocol::Tftp);
             }
             ui.separator();
-            if b(ui, "⏏", "Disconnect", Color32::from_rgb(240, 100, 100), can_disc, "Disconnect the current session")
-                && let Some(t) = self.active_tab()
+            if b(
+                ui,
+                "⏏",
+                language.text("Disconnect"),
+                Color32::from_rgb(240, 100, 100),
+                can_disc,
+                language.text("Disconnect the current session"),
+            ) && let Some(t) = self.active_tab()
             {
                 t.disconnect();
             }
-            if b(ui, "⚙", "Settings", Color32::from_rgb(190, 190, 200), true, "Settings") {
-                self.show_settings = true;
+            if b(ui, "⚙", language.text("Settings"), Color32::from_rgb(190, 190, 200), true, language.text("Settings"))
+            {
+                self.open_settings();
             }
-            if b(ui, "◧", "Sidebar", Color32::from_rgb(120, 200, 230), true, "Show / hide the left sidebar") {
+            if b(
+                ui,
+                "◧",
+                language.text("Sidebar"),
+                Color32::from_rgb(120, 200, 230),
+                true,
+                language.text("Show / hide the left sidebar"),
+            ) {
                 self.config.settings.show_sidebar = !self.config.settings.show_sidebar;
             }
-            if b(ui, "❓", "Help", Color32::from_rgb(120, 200, 230), true, "About") {
+            if b(ui, "❓", language.text("Help"), Color32::from_rgb(120, 200, 230), true, language.text("About")) {
                 self.show_about = true;
             }
         });
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
+        let language = Language::from_context(ui.ctx());
         let n = self.tabs.len();
         let notice = self.notice.clone();
         ui.horizontal(|ui| {
             match self.active_tab() {
                 None => {
-                    ui.label(RichText::new("🏠 Home").strong());
+                    ui.label(RichText::new(language.text("🏠 Home")).strong());
                 }
                 Some(t) => {
                     let (color, text) = match t.state() {
-                        ConnState::Connected => (theme::OK_GREEN, "Connected"),
-                        ConnState::Connecting => (theme::WARN_YELLOW, "Connecting…"),
-                        ConnState::Disconnected => (theme::ERR_RED, "Disconnected"),
-                        ConnState::Ready => (theme::ACCENT_LIGHT, "Ready (UDP)"),
+                        ConnState::Connected => (theme::OK_GREEN, language.text("Connected")),
+                        ConnState::Connecting => (theme::WARN_YELLOW, language.text("Connecting…")),
+                        ConnState::Disconnected => (theme::ERR_RED, language.text("Disconnected")),
+                        ConnState::Ready => (theme::ACCENT_LIGHT, language.text("Ready (UDP)")),
                     };
                     widgets::status_dot(ui, color);
                     ui.colored_label(color, text);
                     ui.separator();
                     ui.label(format!("{} {}:{}", t.info.protocol.label(), t.info.host, t.info.port));
                     if !t.info.user.is_empty() && t.info.protocol != Protocol::Tftp {
-                        ui.label(format!("user {}", t.info.user));
+                        ui.label(language.format("user {user}", &[("user", &t.info.user)]));
                     }
                     if let Some(b) = &t.busy {
                         ui.separator();
                         ui.spinner();
-                        ui.label(b);
+                        ui.label(language.text(b));
                         if let Some((done, total)) = t.progress {
                             match total {
                                 Some(tot) if tot > 0 => {
@@ -297,7 +388,11 @@ impl TransferApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.weak(concat!("v", env!("CARGO_PKG_VERSION")));
                 ui.separator();
-                ui.label(format!("{n} session{}", if n == 1 { "" } else { "s" }));
+                ui.label(if n == 1 {
+                    language.text("1 session").to_string()
+                } else {
+                    language.format("{count} sessions", &[("count", &n.to_string())])
+                });
                 if let Some((level, msg)) = notice {
                     ui.separator();
                     let c = level_color(ui, level);
@@ -308,10 +403,11 @@ impl TransferApp {
     }
 
     fn tab_strip(&mut self, ui: &mut egui::Ui) {
+        let language = Language::from_context(ui.ctx());
         let mut close = None;
         egui::ScrollArea::horizontal().id_salt("tab_strip").show(ui, |ui| {
             ui.horizontal(|ui| {
-                let home = egui::Button::new("🏠 Home").selected(self.active.is_none());
+                let home = egui::Button::new(language.text("🏠 Home")).selected(self.active.is_none());
                 if ui.add(home).clicked() {
                     self.active = None;
                 }
@@ -339,7 +435,10 @@ impl TransferApp {
                                 if ui.add(egui::Button::new(text).frame(false)).clicked() {
                                     self.active = Some(t.id);
                                 }
-                                if ui.add(egui::Button::new("✖").frame(false).small()).on_hover_text("Close").clicked()
+                                if ui
+                                    .add(egui::Button::new("✖").frame(false).small())
+                                    .on_hover_text(language.text("Close"))
+                                    .clicked()
                                 {
                                     close = Some(t.id);
                                 }
@@ -356,14 +455,15 @@ impl TransferApp {
     // ------------------------------------------------------------------ main area
 
     fn home(&mut self, ui: &mut egui::Ui) {
+        let language = Language::from_context(ui.ctx());
         ui.vertical_centered(|ui| {
             ui.add_space(30.0);
             ui.label(RichText::new("Rust Transfer GUI").size(30.0).strong().color(theme::ACCENT_LIGHT));
-            ui.label("FTP · SFTP · SSH · TFTP file transfer client");
+            ui.label(language.text("FTP · SFTP · SSH · TFTP file transfer client"));
             ui.add_space(20.0);
             if ui
                 .add(
-                    egui::Button::new(RichText::new("➕  Start new session").size(18.0))
+                    egui::Button::new(RichText::new(language.text("➕  Start new session")).size(18.0))
                         .min_size(Vec2::new(260.0, 44.0))
                         .fill(theme::ACCENT),
                 )
@@ -373,7 +473,7 @@ impl TransferApp {
             }
             ui.add_space(20.0);
             if !self.config.sessions.is_empty() {
-                ui.label(RichText::new("Saved sessions").strong());
+                ui.label(RichText::new(language.text("Saved sessions")).strong());
                 let mut open = None;
                 for (i, s) in self.config.sessions.iter().enumerate().take(10) {
                     if ui
@@ -395,16 +495,21 @@ impl TransferApp {
                 }
             }
             ui.add_space(20.0);
-            ui.weak("Tip: double-click a saved session in the left sidebar to connect. Passwords are never stored.");
+            ui.weak(
+                language.text(
+                    "Tip: double-click a saved session in the left sidebar to connect. Passwords are never stored.",
+                ),
+            );
         });
     }
 
     fn session_view(ui: &mut egui::Ui, tab: &mut SessionTab) -> Option<PendingDelete> {
+        let language = Language::from_context(ui.ctx());
         // Header with connection info and reconnect.
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} {}", tab.info.protocol.icon(), tab.title())).strong().size(15.0));
             ui.weak(format!("{}://{}:{}", tab.info.protocol.label().to_lowercase(), tab.info.host, tab.info.port));
-            if tab.state() == ConnState::Disconnected && ui.button("⟳ Reconnect").clicked() {
+            if tab.state() == ConnState::Disconnected && ui.button(language.text("⟳ Reconnect")).clicked() {
                 tab.connect();
             }
         });
@@ -441,6 +546,7 @@ impl TransferApp {
     // ------------------------------------------------------------------ windows
 
     fn windows(&mut self, ctx: &egui::Context) {
+        let language = self.config.settings.language;
         if let Some(res) = self.dialog.show(ctx) {
             match res {
                 DialogResult::Connect { session, secrets, save, replace } => {
@@ -455,16 +561,19 @@ impl TransferApp {
 
         if let Some(p) = &self.pending_delete {
             let mut decision = None;
-            let what = if p.is_dir { "folder" } else { "file" };
+            let what = if p.is_dir { language.text("folder") } else { language.text("file") };
             let name = p.name.clone();
             let m = egui::Modal::new(egui::Id::new("confirm_delete")).show(ctx, |ui| {
-                ui.heading("Confirm delete");
-                ui.label(format!("Delete remote {what} \"{name}\"? This cannot be undone."));
+                ui.heading(language.text("Confirm delete"));
+                ui.label(language.format(
+                    "Delete remote {kind} \"{name}\"? This cannot be undone.",
+                    &[("kind", what), ("name", &name)],
+                ));
                 ui.horizontal(|ui| {
-                    if ui.add(egui::Button::new("🗑 Delete").fill(theme::ERR_RED)).clicked() {
+                    if ui.add(egui::Button::new(language.text("🗑 Delete")).fill(theme::ERR_RED)).clicked() {
                         decision = Some(true);
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(language.text("Cancel")).clicked() {
                         decision = Some(false);
                     }
                 });
@@ -484,27 +593,65 @@ impl TransferApp {
         }
 
         let mut open = self.show_settings;
-        let mut changed = false;
-        egui::Window::new("⚙ Settings").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-            changed |= ui.checkbox(&mut self.config.settings.dark_mode, "Dark theme (blue accents)").changed();
-            changed |= ui.checkbox(&mut self.config.settings.show_sidebar, "Show sidebar").changed();
-            ui.separator();
-            ui.label("Saved sessions are stored in:");
-            ui.monospace(Config::path().map(|p| p.display().to_string()).unwrap_or_else(|| "(unavailable)".into()));
-            ui.weak("Passwords and key passphrases are never written to disk.");
-        });
-        self.show_settings = open;
-        if changed {
-            self.save_config();
+        let mut apply = false;
+        let mut cancel = false;
+        egui::Window::new(language.text("⚙ Settings"))
+            .id(egui::Id::new("settings_window"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Language / 語言 / 言語");
+                    egui::ComboBox::from_id_salt("language_selector")
+                        .selected_text(self.settings_draft.language.name())
+                        .show_ui(ui, |ui| {
+                            for choice in Language::ALL {
+                                ui.selectable_value(&mut self.settings_draft.language, choice, choice.name());
+                            }
+                        });
+                });
+                ui.checkbox(&mut self.settings_draft.dark_mode, language.text("Dark theme (blue accents)"));
+                ui.checkbox(&mut self.settings_draft.show_sidebar, language.text("Show sidebar"));
+                ui.weak(language.text("Changes take effect after Apply; no restart is needed."));
+                if !self.cjk_fonts_available {
+                    ui.colored_label(
+                        theme::WARN_YELLOW,
+                        "CJK font unavailable. Install Noto Sans CJK or set RUST_TRANSFER_GUI_FONT.",
+                    );
+                }
+                ui.separator();
+                ui.label(language.text("Saved sessions are stored in:"));
+                ui.monospace(
+                    Config::path()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| language.text("(unavailable)").into()),
+                );
+                ui.weak(language.text("Passwords and key passphrases are never written to disk."));
+                ui.horizontal(|ui| {
+                    apply = ui.button(language.text("Apply")).clicked();
+                    cancel = ui.button(language.text("Cancel")).clicked();
+                });
+            });
+        self.show_settings = open && !cancel;
+        if apply {
+            self.apply_settings(ctx, Config::save);
         }
 
         let mut open = self.show_about;
-        egui::Window::new("ℹ About").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-            ui.label(RichText::new(concat!("Rust Transfer GUI v", env!("CARGO_PKG_VERSION"))).strong());
-            ui.label("A small FTP / SFTP / SSH / TFTP client written in Rust with egui.");
-            ui.label("Layout inspired by classic multi-protocol terminal tools; not affiliated with any of them.");
-            ui.label("© 2026 Ke Sheng Da — MIT License");
-        });
+        egui::Window::new(language.text("ℹ About"))
+            .id(egui::Id::new("about_window"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(RichText::new(concat!("Rust Transfer GUI v", env!("CARGO_PKG_VERSION"))).strong());
+                ui.label(language.text("A small FTP / SFTP / SSH / TFTP client written in Rust with egui."));
+                ui.label(language.text(
+                    "Layout inspired by classic multi-protocol terminal tools; not affiliated with any of them.",
+                ));
+                ui.label("© 2026 Ke Sheng Da — MIT License");
+            });
         self.show_about = open;
     }
 }
@@ -512,6 +659,7 @@ impl TransferApp {
 impl eframe::App for TransferApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.config.settings.language.install(&ctx);
         if self.theme_applied != Some(self.config.settings.dark_mode) {
             theme::apply(&ctx, self.config.settings.dark_mode);
             self.theme_applied = Some(self.config.settings.dark_mode);
@@ -519,8 +667,13 @@ impl eframe::App for TransferApp {
         for t in &mut self.tabs {
             t.poll();
         }
-        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::N)) {
+        if self.pending_upload.is_none() && ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::N)) {
             self.dialog.open_new(Protocol::Ssh);
+        }
+        if self.pending_upload.is_none()
+            && ctx.input(|input| input.modifiers.command && input.key_pressed(egui::Key::Comma))
+        {
+            self.open_settings();
         }
 
         let dark = self.config.settings.dark_mode;
@@ -542,19 +695,24 @@ impl eframe::App for TransferApp {
 
         let mut action = None;
         if expanded {
-            egui::Panel::left("sidebar").resizable(true).default_size(390.0).min_size(200.0).show(ui, |ui| {
-                ui.add_space(4.0);
-                action = match self.sidebar_tab {
-                    SidebarTab::Sessions => {
-                        sidebar::sessions_panel(ui, &self.config.sessions, &mut self.selected_saved)
-                    }
-                    SidebarTab::Files => {
-                        let id = self.active;
-                        let tab = id.and_then(|id| self.tabs.iter_mut().find(|t| t.id == id));
-                        sidebar::files_panel(ui, tab)
-                    }
-                };
-            });
+            egui::Panel::left("sidebar")
+                .resizable(true)
+                .default_size(300.0)
+                .min_size(200.0)
+                .max_size(ui.available_width() * 0.45)
+                .show(ui, |ui| {
+                    ui.add_space(4.0);
+                    action = match self.sidebar_tab {
+                        SidebarTab::Sessions => {
+                            sidebar::sessions_panel(ui, &self.config.sessions, &mut self.selected_saved)
+                        }
+                        SidebarTab::Files => {
+                            let id = self.active;
+                            let tab = id.and_then(|id| self.tabs.iter_mut().find(|t| t.id == id));
+                            sidebar::files_panel(ui, tab)
+                        }
+                    };
+                });
         }
         match action {
             Some(SidebarAction::New) => self.dialog.open_new(Protocol::Ssh),
@@ -593,6 +751,8 @@ impl eframe::App for TransferApp {
         });
 
         self.windows(&ctx);
+        self.handle_file_drop(&ctx);
+        self.upload_confirmation(&ctx);
 
         if self.tabs.iter().any(SessionTab::is_busy) {
             ctx.request_repaint_after(Duration::from_millis(250));
@@ -609,9 +769,10 @@ fn level_color(ui: &egui::Ui, level: Level) -> Color32 {
 }
 
 fn log_view(ui: &mut egui::Ui, tab: &mut SessionTab) {
+    let language = Language::from_context(ui.ctx());
     ui.horizontal(|ui| {
-        ui.strong("📝 Session log");
-        if ui.small_button("Clear").clicked() {
+        ui.strong(language.text("📝 Session log"));
+        if ui.small_button(language.text("Clear")).clicked() {
             tab.log.clear();
         }
     });
@@ -622,9 +783,15 @@ fn log_view(ui: &mut egui::Ui, tab: &mut SessionTab) {
                 let s = line.at.as_secs();
                 let c = level_color(ui, line.level);
                 ui.label(
-                    RichText::new(format!("[{:02}:{:02}:{:02}] {}", s / 3600, s / 60 % 60, s % 60, line.text))
-                        .monospace()
-                        .color(c),
+                    RichText::new(format!(
+                        "[{:02}:{:02}:{:02}] {}",
+                        s / 3600,
+                        s / 60 % 60,
+                        s % 60,
+                        language.text(&line.text)
+                    ))
+                    .monospace()
+                    .color(c),
                 );
             }
         },
@@ -632,18 +799,29 @@ fn log_view(ui: &mut egui::Ui, tab: &mut SessionTab) {
 }
 
 fn tftp_form(ui: &mut egui::Ui, tab: &mut SessionTab) {
+    let language = Language::from_context(ui.ctx());
+    ui.weak(language.text("Drop one file to prepare a TFTP upload."));
     let busy = tab.tftp.events.is_some();
     let mut op = None;
-    egui::Grid::new(("tftp", tab.id)).num_columns(3).spacing([8.0, 8.0]).show(ui, |ui| {
+    ui.push_id(("tftp", tab.id), |ui| {
         let f = &mut tab.tftp;
-        ui.label("Remote file");
-        ui.add(egui::TextEdit::singleline(&mut f.remote).desired_width(320.0).hint_text("e.g. firmware.bin"));
-        ui.label(RichText::new(format!("mode: {}", crate::tftp::MODE_OCTET)).monospace().weak());
-        ui.end_row();
-        ui.label("Local file");
-        ui.add(egui::TextEdit::singleline(&mut f.local).desired_width(320.0).hint_text("local path"));
-        ui.horizontal(|ui| {
-            if ui.button("📂 Open…").on_hover_text("Pick a file to upload").clicked()
+        ui.label(language.text("Remote file"));
+        ui.add(
+            egui::TextEdit::singleline(&mut f.remote)
+                .desired_width(ui.available_width())
+                .hint_text(language.text("e.g. firmware.bin")),
+        );
+        ui.label(
+            RichText::new(language.format("mode: {mode}", &[("mode", crate::tftp::MODE_OCTET)])).monospace().weak(),
+        );
+        ui.label(language.text("Local file"));
+        ui.add(
+            egui::TextEdit::singleline(&mut f.local)
+                .desired_width(ui.available_width())
+                .hint_text(language.text("local path")),
+        );
+        ui.horizontal_wrapped(|ui| {
+            if ui.button(language.text("📂 Open…")).on_hover_text(language.text("Pick a file to upload")).clicked()
                 && let Some(p) = rfd::FileDialog::new().set_directory(default_local_dir()).pick_file()
             {
                 if f.remote.trim().is_empty() {
@@ -651,7 +829,10 @@ fn tftp_form(ui: &mut egui::Ui, tab: &mut SessionTab) {
                 }
                 f.local = p.to_string_lossy().into_owned();
             }
-            if ui.button("💾 Save as…").on_hover_text("Choose where to store a download").clicked()
+            if ui
+                .button(language.text("💾 Save as…"))
+                .on_hover_text(language.text("Choose where to store a download"))
+                .clicked()
                 && let Some(p) = rfd::FileDialog::new()
                     .set_directory(default_local_dir())
                     .set_file_name(f.remote.rsplit(['/', '\\']).next().unwrap_or_default())
@@ -660,22 +841,21 @@ fn tftp_form(ui: &mut egui::Ui, tab: &mut SessionTab) {
                 f.local = p.to_string_lossy().into_owned();
             }
         });
-        ui.end_row();
-        ui.label("Timeout (s)");
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(language.text("Timeout (s)"));
             ui.add(egui::DragValue::new(&mut f.timeout_secs).range(1..=60));
-            ui.label("Retries");
+            ui.label(language.text("Retries"));
             ui.add(egui::DragValue::new(&mut f.retries).range(0..=50));
         });
-        ui.end_row();
     });
     ui.add_space(6.0);
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         let ready = !busy && !tab.tftp.remote.trim().is_empty();
         if ui
             .add_enabled(
                 ready,
-                egui::Button::new(RichText::new("⤵ Get (download)").size(15.0)).min_size(Vec2::new(150.0, 32.0)),
+                egui::Button::new(RichText::new(language.text("⤵ Get (download)")).size(15.0))
+                    .min_size(Vec2::new(150.0, 32.0)),
             )
             .clicked()
         {
@@ -684,7 +864,8 @@ fn tftp_form(ui: &mut egui::Ui, tab: &mut SessionTab) {
         if ui
             .add_enabled(
                 ready,
-                egui::Button::new(RichText::new("⤴ Put (upload)").size(15.0)).min_size(Vec2::new(150.0, 32.0)),
+                egui::Button::new(RichText::new(language.text("⤴ Put (upload)")).size(15.0))
+                    .min_size(Vec2::new(150.0, 32.0)),
             )
             .clicked()
         {
@@ -694,7 +875,7 @@ fn tftp_form(ui: &mut egui::Ui, tab: &mut SessionTab) {
     if let Some(op) = op {
         tab.start_tftp(op);
     }
-    ui.weak("TFTP (RFC 1350) has no authentication and no directory listing.");
+    ui.weak(language.text("TFTP (RFC 1350) has no authentication and no directory listing."));
 }
 
 /// The user's home directory (or the current directory as a fallback).

@@ -1,11 +1,14 @@
 //! Terminal-style view for SSH tabs: black background, monospace, coloured output.
 
+use crate::i18n::Language;
+
 use eframe::egui::{self, RichText, TextEdit};
 
 use super::session::{SessionTab, TermKind};
 use super::theme::{TERM_BG, TERM_ERR, TERM_GREEN, TERM_INFO, TERM_TEXT};
 
 pub fn show(ui: &mut egui::Ui, tab: &mut SessionTab) {
+    let language = Language::from_context(ui.ctx());
     egui::Frame::NONE.fill(TERM_BG).inner_margin(8.0).corner_radius(4.0).show(ui, |ui| {
         ui.set_min_size(ui.available_size());
         let input_height = 26.0;
@@ -23,7 +26,13 @@ pub fn show(ui: &mut egui::Ui, tab: &mut SessionTab) {
                         TermKind::Stderr => TERM_ERR,
                         TermKind::Info => TERM_INFO,
                     };
-                    let text = if line.text.is_empty() { " " } else { line.text.as_str() };
+                    let text = if line.text.is_empty() {
+                        " "
+                    } else if line.kind == TermKind::Info {
+                        language.text(&line.text)
+                    } else {
+                        line.text.as_str()
+                    };
                     ui.add(egui::Label::new(RichText::new(text).monospace().color(color)).wrap());
                 }
             });
@@ -37,7 +46,7 @@ pub fn show(ui: &mut egui::Ui, tab: &mut SessionTab) {
                     .background_color(TERM_BG)
                     .frame(egui::Frame::NONE)
                     .desired_width(f32::INFINITY)
-                    .hint_text(if tab.connected { "" } else { "(not connected)" }),
+                    .hint_text(if tab.connected { "" } else { language.text("(not connected)") }),
             );
             if tab.term.want_focus {
                 resp.request_focus();

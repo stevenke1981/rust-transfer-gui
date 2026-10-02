@@ -79,6 +79,13 @@ pub struct WorkerHandle {
 }
 
 impl WorkerHandle {
+    #[cfg(test)]
+    pub(crate) fn test_channel() -> (Self, Receiver<SessionCommand>, Sender<Event>) {
+        let (commands, receiver) = mpsc::channel();
+        let (events, event_receiver) = mpsc::channel();
+        (Self { tx: Some(commands), events: event_receiver }, receiver, events)
+    }
+
     /// Queue a command; returns false if the worker has gone away.
     pub fn send(&self, cmd: SessionCommand) -> bool {
         self.tx.as_ref().is_some_and(|tx| tx.send(cmd).is_ok())

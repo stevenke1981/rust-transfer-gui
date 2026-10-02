@@ -1,4 +1,6 @@
-//! Left sidebar: a vertical tab strip with "Sessions" and "SFTP / Files" panels.
+//! Left sidebar: a vertical tab strip with language.text("Sessions") and "SFTP / Files" panels.
+
+use crate::i18n::Language;
 
 use eframe::egui::{self, RichText, Vec2};
 
@@ -22,10 +24,11 @@ pub enum SidebarAction {
 
 /// The narrow vertical tab strip. Clicking the active tab collapses the sidebar.
 pub fn strip(ui: &mut egui::Ui, current: &mut SidebarTab, expanded: &mut bool) {
+    let language = Language::from_context(ui.ctx());
     ui.add_space(6.0);
     for (tab, icon, label, color) in [
-        (SidebarTab::Sessions, "⭐", "Sessions", egui::Color32::from_rgb(255, 205, 70)),
-        (SidebarTab::Files, "📁", "Files", egui::Color32::from_rgb(255, 180, 60)),
+        (SidebarTab::Sessions, "⭐", language.text("Sessions"), egui::Color32::from_rgb(255, 205, 70)),
+        (SidebarTab::Files, "📁", language.text("Files"), egui::Color32::from_rgb(255, 180, 60)),
     ] {
         let selected = *expanded && *current == tab;
         let r = super::widgets::icon_button(ui, icon, label, color, Vec2::new(56.0, 56.0), selected, true);
@@ -46,28 +49,34 @@ pub fn sessions_panel(
     saved: &[SavedSession],
     selected: &mut Option<usize>,
 ) -> Option<SidebarAction> {
+    let language = Language::from_context(ui.ctx());
     let mut action = None;
     ui.horizontal(|ui| {
-        ui.strong("⭐ User sessions");
+        ui.strong(language.text("⭐ User sessions"));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("➕").on_hover_text("New session").clicked() {
+            if ui.button("➕").on_hover_text(language.text("New session")).clicked() {
                 action = Some(SidebarAction::New);
             }
         });
     });
     ui.separator();
     if saved.is_empty() {
-        ui.weak("No saved sessions yet.\nClick ➕ or the Session button to create one.");
+        ui.weak(language.text("No saved sessions yet.\nClick ➕ or the Session button to create one."));
     }
     egui::ScrollArea::vertical().id_salt("saved_sessions").auto_shrink([false, false]).show(ui, |ui| {
         for (i, s) in saved.iter().enumerate() {
             let text = format!("{} {}", s.protocol.icon(), s.display_name());
             let r = ui.selectable_label(*selected == Some(i), RichText::new(text).strong()).on_hover_text(format!(
-                "{} {}:{}{}\nDouble-click to connect, right-click for more.",
+                "{} {}:{}{}\n{}",
                 s.protocol.label(),
                 s.host,
                 s.port,
-                if s.user.is_empty() { String::new() } else { format!("  user: {}", s.user) }
+                if s.user.is_empty() {
+                    String::new()
+                } else {
+                    format!("  {}", language.format("user {user}", &[("user", &s.user)]))
+                },
+                language.text("Double-click to connect, right-click for more.")
             ));
             if r.clicked() {
                 *selected = Some(i);
@@ -76,15 +85,15 @@ pub fn sessions_panel(
                 action = Some(SidebarAction::Open(i));
             }
             r.context_menu(|ui| {
-                if ui.button("🔌 Connect").clicked() {
+                if ui.button(language.text("🔌 Connect")).clicked() {
                     action = Some(SidebarAction::Open(i));
                     ui.close();
                 }
-                if ui.button("✏ Edit…").clicked() {
+                if ui.button(language.text("✏ Edit…")).clicked() {
                     action = Some(SidebarAction::Edit(i));
                     ui.close();
                 }
-                if ui.button("🗑 Delete").clicked() {
+                if ui.button(language.text("🗑 Delete")).clicked() {
                     action = Some(SidebarAction::Delete(i));
                     ui.close();
                 }
@@ -96,10 +105,11 @@ pub fn sessions_panel(
 }
 
 pub fn files_panel(ui: &mut egui::Ui, tab: Option<&mut SessionTab>) -> Option<SidebarAction> {
+    let language = Language::from_context(ui.ctx());
     let Some(tab) = tab.filter(|t| t.supports_files()) else {
-        ui.strong("📁 Remote files");
+        ui.strong(language.text("📁 Remote files"));
         ui.separator();
-        ui.weak("Open an SSH, SFTP or FTP session to browse remote files here.");
+        ui.weak(language.text("Open an SSH, SFTP or FTP session to browse remote files here."));
         return None;
     };
     ui.strong(format!("📁 {} — {}", tab.info.protocol.label(), tab.title()));

@@ -107,11 +107,12 @@ impl SavedSession {
 pub struct Settings {
     pub dark_mode: bool,
     pub show_sidebar: bool,
+    pub language: crate::i18n::Language,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { dark_mode: true, show_sidebar: true }
+        Self { dark_mode: true, show_sidebar: true, language: crate::i18n::Language::default() }
     }
 }
 
@@ -135,6 +136,7 @@ impl Config {
         let _ = writeln!(out, "[settings]");
         let _ = writeln!(out, "theme={}", if self.settings.dark_mode { "dark" } else { "light" });
         let _ = writeln!(out, "sidebar={}", self.settings.show_sidebar);
+        let _ = writeln!(out, "language={}", self.settings.language.code());
         for s in &self.sessions {
             let _ = writeln!(out, "\n[session]");
             let _ = writeln!(out, "name={}", clean(&s.name));
@@ -185,6 +187,7 @@ impl Config {
                 Section::Settings => match key.as_str() {
                     "theme" => cfg.settings.dark_mode = !value.eq_ignore_ascii_case("light"),
                     "sidebar" => cfg.settings.show_sidebar = value != "false",
+                    "language" => cfg.settings.language = crate::i18n::Language::parse(value).unwrap_or_default(),
                     _ => {}
                 },
                 Section::Session => {
@@ -254,7 +257,7 @@ mod tests {
 
     fn sample() -> Config {
         Config {
-            settings: Settings { dark_mode: false, show_sidebar: false },
+            settings: Settings { dark_mode: false, show_sidebar: false, language: crate::i18n::Language::Japanese },
             sessions: vec![
                 SavedSession {
                     name: "prod box".into(),
@@ -284,6 +287,22 @@ mod tests {
     fn roundtrip() {
         let c = sample();
         assert_eq!(Config::from_text(&c.to_text()), c);
+    }
+
+    #[test]
+    fn language_settings_preserve_legacy_sessions() {
+        assert_eq!(Config::default().settings.language, crate::i18n::Language::English);
+        for value in ["", "language=invalid", "language=zh-TW", "language=en", "language=ja"] {
+            let text = format!("[settings]\ntheme=light\n{value}\n[session]\nhost=example.com\nname=測試連線\n");
+            let config = Config::from_text(&text);
+            assert_eq!(config.sessions[0].name, "測試連線");
+            assert!(!config.settings.dark_mode);
+            assert_eq!(Config::from_text(&config.to_text()), config);
+            assert_eq!(
+                config.settings.language,
+                crate::i18n::Language::parse(value.trim_start_matches("language=")).unwrap_or_default()
+            );
+        }
     }
 
     #[test]

@@ -17,6 +17,16 @@ them and uses no third-party assets.
 
 ## Features
 
+* **多語系介面 / Languages** – English（預設）、繁體中文、日本語。
+  開啟工具列「設定」，選擇介面語言後按「套用」，立即切換並記住選擇；
+  「取消」或關閉設定視窗會放棄尚未套用的變更。
+  Menus, session dialogs, file operations, tooltips and transfer status support all three languages.
+  Server responses, remote command output and detailed protocol diagnostics retain their original text.
+* **Drag and drop** – drop local files onto an idle, connected SSH/SFTP/FTP session,
+  review the destination and confirm to queue multiple uploads to its current remote folder.
+  TFTP accepts one file and fills the upload form; review the remote name and press Put.
+  Folders, missing local paths and duplicate destination names are rejected with a message.
+
 * **Multi-session tabs** – one closable tab per connection (SSH, SFTP, FTP, TFTP) plus a
   Home tab. Status dots show connected / connecting / disconnected.
 * **New-session dialog** – protocol buttons across the top (SSH, SFTP, FTP, TFTP), then host,
@@ -61,22 +71,62 @@ Release and also available as workflow artifacts. The installer:
   PATH entry again.
 
 After installing, you can start the app from any new terminal with `rust-transfer-gui`.
-Silent install/uninstall: `rust-transfer-gui-0.1.0-x64-setup.exe /S` and
+Silent install/uninstall: `rust-transfer-gui-0.2.0-x64-setup.exe /S` and
 `"C:\Program Files\Rust Transfer GUI\uninstall.exe" /S`.
 
 To build the installer yourself (requires [NSIS 3](https://nsis.sourceforge.io/)):
 
 ```powershell
-cargo build --release --target x86_64-pc-windows-msvc
-mkdir dist
-makensis /DVERSION=0.1.0 installer\windows\rust-transfer-gui.nsi
-# -> dist\rust-transfer-gui-0.1.0-x64-setup.exe
+pwsh -File scripts/package-windows.ps1 -Toolchain 1.95.0
+# -> dist\rust-transfer-gui-0.2.0-x64-setup.exe
+# -> dist\rust-transfer-gui-0.2.0-x64-portable.exe
 ```
+
+The installer offers English, Traditional Chinese and Japanese, with English selected
+for a first installation. An upgrade retains the installer language and does not replace
+the application's saved sessions or language preference. Installer language and app language
+are separate settings.
+
+The packaging script reads the version from Cargo metadata, checks that the binary is an
+x64 Windows GUI application, rejects external VC++/OpenSSL/libssh2 runtime DLL dependencies,
+and writes SHA-256 checksums plus a DLL dependency report beside the EXEs.
+MSVC builds use the static C runtime configured in `.cargo/config.toml`.
+Use native Windows Perl (for example Strawberry Perl) on PATH to build vendored OpenSSL;
+Git for Windows' bundled Perl may lack the required modules.
+Use `-NsisCompiler C:\path\to\makensis.exe` for portable NSIS, or `-SkipBuild` to package
+an already-built release binary. Packaging requires Visual Studio C++ tools (`dumpbin`).
 
 The PATH changes are done by `installer/windows/path-helper.ps1` (run elevated by the
 installer through Windows PowerShell).
 
 ## Building from source
+
+### Language and font support
+
+Choose **Settings → Language → Apply** to switch languages without restarting.
+Use `Ctrl+,` (`Cmd+,` on macOS) to open Settings directly.
+The settings file stores `language=zh-TW`, `language=en` or `language=ja`.
+New installations, older configuration files and unknown language codes default to English;
+an explicitly saved language preference is retained.
+Existing saved sessions remain compatible. Theme and sidebar changes in the Settings window
+also require Apply. View-menu shortcuts retain their immediate behavior.
+
+CJK fonts are loaded once at startup for both interface text and monospace paths/terminal text:
+Microsoft JhengHei and Yu Gothic on Windows, PingFang and Hiragino on macOS, and
+Noto Sans CJK on Linux. On Debian/Ubuntu, install `fonts-noto-cjk`.
+For a custom installation, set `RUST_TRANSFER_GUI_FONT` to a valid TTF/OTF/TTC font file
+containing Chinese and Japanese glyphs. Fonts are read locally and are not redistributed.
+Invalid font files are skipped. Settings shows an English notice if the loaded fonts
+do not cover the Chinese and Japanese sample glyphs.
+
+To add a language, extend `Language` in `src/i18n/mod.rs` and the translation catalog in
+`src/i18n/catalog.rs`. Keep named placeholders unchanged; the catalog tests check their
+consistency and reject duplicate messages. Unmapped diagnostic text falls back to English.
+
+Windows font verification (requires installed CJK fonts):
+`cargo test --lib system_fonts_render_chinese_and_japanese_glyphs -- --ignored`.
+
+### Prerequisites
 
 Requires a recent stable Rust toolchain (edition 2024, Rust ≥ 1.95; install via
 [rustup](https://rustup.rs/)) and a C compiler (libssh2 and OpenSSL are compiled from

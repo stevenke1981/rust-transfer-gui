@@ -2,6 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::i18n::Language;
+
 use eframe::egui::{self, RichText};
 
 use super::session::SessionTab;
@@ -17,16 +19,21 @@ pub struct PendingDelete {
 
 /// Up / refresh / upload / download / new folder / delete buttons.
 pub fn toolbar(ui: &mut egui::Ui, tab: &mut SessionTab) -> Option<PendingDelete> {
+    let language = Language::from_context(ui.ctx());
+    ui.weak(language.text("Drop files here to upload to the active session."));
     let idle = tab.is_idle();
     let mut pending = None;
     ui.horizontal_wrapped(|ui| {
-        if ui.add_enabled(idle, egui::Button::new("⬆")).on_hover_text("Parent directory").clicked() {
+        if ui.add_enabled(idle, egui::Button::new("⬆")).on_hover_text(language.text("Parent directory")).clicked() {
             tab.send(SessionCommand::Up);
         }
-        if ui.add_enabled(idle, egui::Button::new("⟳")).on_hover_text("Refresh").clicked() {
+        if ui.add_enabled(idle, egui::Button::new("⟳")).on_hover_text(language.text("Refresh")).clicked() {
             tab.send(SessionCommand::Refresh);
         }
-        if ui.add_enabled(idle, egui::Button::new("⤴ Upload")).on_hover_text("Upload a local file here").clicked()
+        if ui
+            .add_enabled(idle, egui::Button::new(language.text("⤴ Upload")))
+            .on_hover_text(language.text("Upload a local file here"))
+            .clicked()
             && let Some(p) = rfd::FileDialog::new().set_directory(super::default_local_dir()).pick_file()
         {
             let remote_name = file_name_of(&p);
@@ -34,9 +41,9 @@ pub fn toolbar(ui: &mut egui::Ui, tab: &mut SessionTab) -> Option<PendingDelete>
         }
         let sel_file = tab.browser.selected_entry().filter(|e| !e.is_dir).map(|e| e.name.clone());
         if ui
-            .add_enabled(idle && sel_file.is_some(), egui::Button::new("⤵ Download"))
-            .on_hover_text("Download the selected file")
-            .on_disabled_hover_text("Select a remote file first")
+            .add_enabled(idle && sel_file.is_some(), egui::Button::new(language.text("⤵ Download")))
+            .on_hover_text(language.text("Download the selected file"))
+            .on_disabled_hover_text(language.text("Select a remote file first"))
             .clicked()
             && let Some(name) = sel_file
             && let Some(local) =
@@ -44,13 +51,13 @@ pub fn toolbar(ui: &mut egui::Ui, tab: &mut SessionTab) -> Option<PendingDelete>
         {
             tab.send(SessionCommand::Download { remote_name: name, local });
         }
-        if ui.add_enabled(idle, egui::Button::new("📁+")).on_hover_text("New folder").clicked() {
+        if ui.add_enabled(idle, egui::Button::new("📁+")).on_hover_text(language.text("New folder")).clicked() {
             tab.browser.new_folder = Some(String::new());
         }
         let sel = tab.browser.selected_entry().map(|e| (e.name.clone(), e.is_dir));
         if ui
             .add_enabled(idle && sel.is_some(), egui::Button::new("🗑"))
-            .on_hover_text("Delete the selected file or (empty) folder")
+            .on_hover_text(language.text("Delete the selected file or (empty) folder"))
             .clicked()
             && let Some((name, is_dir)) = sel
         {
@@ -61,12 +68,14 @@ pub fn toolbar(ui: &mut egui::Ui, tab: &mut SessionTab) -> Option<PendingDelete>
         let mut create = false;
         let mut cancel = false;
         ui.horizontal(|ui| {
-            let r = ui.add(egui::TextEdit::singleline(name).hint_text("new folder name").desired_width(150.0));
+            let r = ui
+                .add(egui::TextEdit::singleline(name).hint_text(language.text("new folder name")).desired_width(150.0));
             if !r.has_focus() && name.is_empty() {
                 r.request_focus();
             }
-            create = ui.button("Create").clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-            cancel = ui.button("Cancel").clicked();
+            create = ui.button(language.text("Create")).clicked()
+                || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+            cancel = ui.button(language.text("Cancel")).clicked();
         });
         if create && !name.trim().is_empty() {
             let n = name.trim().to_string();
@@ -81,6 +90,7 @@ pub fn toolbar(ui: &mut egui::Ui, tab: &mut SessionTab) -> Option<PendingDelete>
 
 /// Directory listing with name / size / modified columns. Double-click enters folders.
 pub fn listing(ui: &mut egui::Ui, tab: &mut SessionTab, compact: bool) {
+    let language = Language::from_context(ui.ctx());
     let idle = tab.is_idle();
     ui.horizontal(|ui| {
         ui.label("📂");
@@ -98,7 +108,11 @@ pub fn listing(ui: &mut egui::Ui, tab: &mut SessionTab, compact: bool) {
     let mut enter: Option<String> = None;
     egui::ScrollArea::both().id_salt(("listing", tab.id, compact)).auto_shrink([false, false]).show(ui, |ui| {
         if !tab.connected {
-            ui.weak(if tab.worker.is_some() { "Connecting…" } else { "Not connected." });
+            ui.weak(if tab.worker.is_some() {
+                language.text("Connecting…")
+            } else {
+                language.text("Not connected.")
+            });
             return;
         }
         egui::Grid::new(("grid", tab.id, compact))
@@ -106,9 +120,9 @@ pub fn listing(ui: &mut egui::Ui, tab: &mut SessionTab, compact: bool) {
             .num_columns(3)
             .min_col_width(if compact { 40.0 } else { 70.0 })
             .show(ui, |ui| {
-                ui.label(RichText::new("Name").strong());
-                ui.label(RichText::new("Size").strong());
-                ui.label(RichText::new("Modified (UTC)").strong());
+                ui.label(RichText::new(language.text("Name")).strong());
+                ui.label(RichText::new(language.text("Size")).strong());
+                ui.label(RichText::new(language.text("Modified (UTC)")).strong());
                 ui.end_row();
                 if ui.selectable_label(false, "📁 ..").double_clicked() {
                     enter = Some("..".into());
@@ -144,6 +158,7 @@ pub fn listing(ui: &mut egui::Ui, tab: &mut SessionTab, compact: bool) {
 
 /// Text-field based upload/download form (works without a native file dialog).
 pub fn transfer_form(ui: &mut egui::Ui, tab: &mut SessionTab) {
+    let language = Language::from_context(ui.ctx());
     let idle = tab.is_idle();
     // Keep the suggested download path in sync with the selection.
     if let Some(e) = tab.browser.selected_entry().filter(|e| !e.is_dir) {
@@ -162,12 +177,21 @@ pub fn transfer_form(ui: &mut egui::Ui, tab: &mut SessionTab) {
     let mut cmd = None;
     let label_w = 140.0;
     let field = egui::vec2((ui.available_width() - label_w - 330.0).clamp(160.0, 520.0), 20.0);
-    ui.horizontal(|ui| {
-        ui.add_sized([label_w, 20.0], egui::Label::new("Upload local file"));
-        ui.add_sized(field, egui::TextEdit::singleline(&mut b.upload_local).hint_text("/path/to/local/file"));
-        ui.label("as");
-        ui.add_sized([140.0, 20.0], egui::TextEdit::singleline(&mut b.upload_remote_name).hint_text("remote name"));
-        if ui.add_enabled(idle && !b.upload_local.trim().is_empty(), egui::Button::new("⤴ Upload")).clicked() {
+    ui.horizontal_wrapped(|ui| {
+        ui.add_sized([label_w, 20.0], egui::Label::new(language.text("Upload local file")));
+        ui.add_sized(
+            field,
+            egui::TextEdit::singleline(&mut b.upload_local).hint_text(language.text("/path/to/local/file")),
+        );
+        ui.label(language.text("as"));
+        ui.add_sized(
+            [140.0, 20.0],
+            egui::TextEdit::singleline(&mut b.upload_remote_name).hint_text(language.text("remote name")),
+        );
+        if ui
+            .add_enabled(idle && !b.upload_local.trim().is_empty(), egui::Button::new(language.text("⤴ Upload")))
+            .clicked()
+        {
             let local = PathBuf::from(b.upload_local.trim());
             let mut name = b.upload_remote_name.trim().to_string();
             if name.is_empty() {
@@ -176,13 +200,19 @@ pub fn transfer_form(ui: &mut egui::Ui, tab: &mut SessionTab) {
             cmd = Some(SessionCommand::Upload { local, remote_name: name });
         }
     });
-    ui.horizontal(|ui| {
-        ui.add_sized([label_w, 20.0], egui::Label::new("Download selected to"));
-        ui.add_sized(field, egui::TextEdit::singleline(&mut b.download_local).hint_text("select a remote file"));
+    ui.horizontal_wrapped(|ui| {
+        ui.add_sized([label_w, 20.0], egui::Label::new(language.text("Download selected to")));
+        ui.add_sized(
+            field,
+            egui::TextEdit::singleline(&mut b.download_local).hint_text(language.text("select a remote file")),
+        );
         let sel = b.selected_entry().filter(|e| !e.is_dir).map(|e| e.name.clone());
         if ui
-            .add_enabled(idle && sel.is_some() && !b.download_local.trim().is_empty(), egui::Button::new("⤵ Download"))
-            .on_disabled_hover_text("Select a remote file first")
+            .add_enabled(
+                idle && sel.is_some() && !b.download_local.trim().is_empty(),
+                egui::Button::new(language.text("⤵ Download")),
+            )
+            .on_disabled_hover_text(language.text("Select a remote file first"))
             .clicked()
             && let Some(remote_name) = sel
         {

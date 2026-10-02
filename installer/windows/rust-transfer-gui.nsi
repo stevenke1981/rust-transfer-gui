@@ -1,7 +1,7 @@
 ; Rust Transfer GUI — Windows installer (NSIS 3, Unicode, x64)
 ;
 ; Build (from the repository root, after `cargo build --release --target x86_64-pc-windows-msvc`):
-;   makensis /DVERSION=0.1.0 installer\windows\rust-transfer-gui.nsi
+;   makensis /DVERSION=0.2.0 installer\windows\rust-transfer-gui.nsi
 ; Optional defines:
 ;   /DBINARY=<path to rust-transfer-gui.exe>   (default: MSVC release output)
 ;   /DOUTDIR=<existing output directory>       (default: dist; must exist)
@@ -19,7 +19,7 @@ SetCompressor /SOLID lzma
 !include "LogicLib.nsh"
 
 !ifndef VERSION
-  !define VERSION "0.1.0"
+  !define VERSION "0.2.0"
 !endif
 !ifndef BINARY
   !define BINARY "..\..\target\x86_64-pc-windows-msvc\release\rust-transfer-gui.exe"
@@ -54,13 +54,18 @@ VIAddVersionKey "FileDescription" "${APPNAME} installer"
 ; ---------------------------------------------------------------- pages
 !define MUI_ABORTWARNING
 !define MUI_COMPONENTSPAGE_SMALLDESC
+!define MUI_LANGDLL_ALLLANGUAGES
+!define MUI_LANGDLL_ALWAYSSHOW
+!define MUI_LANGDLL_REGISTRY_ROOT HKLM
+!define MUI_LANGDLL_REGISTRY_KEY "${APPKEY}"
+!define MUI_LANGDLL_REGISTRY_VALUENAME "InstallerLanguage"
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_LICENSE "..\..\LICENSE"
 !insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${EXENAME}"
-!define MUI_FINISHPAGE_RUN_TEXT "Launch ${APPNAME}"
+!define MUI_FINISHPAGE_RUN_TEXT "$(LaunchApp)"
 !insertmacro MUI_PAGE_FINISH
 
 !insertmacro MUI_UNPAGE_CONFIRM
@@ -68,9 +73,35 @@ VIAddVersionKey "FileDescription" "${APPNAME} installer"
 
 !insertmacro MUI_LANGUAGE "English"
 !insertmacro MUI_LANGUAGE "TradChinese"
+!insertmacro MUI_LANGUAGE "Japanese"
+
+LangString LaunchApp ${LANG_ENGLISH} "Launch ${APPNAME}"
+LangString LaunchApp ${LANG_TRADCHINESE} "啟動 ${APPNAME}"
+LangString LaunchApp ${LANG_JAPANESE} "${APPNAME} を起動"
+LangString MainSection ${LANG_ENGLISH} "${APPNAME} (required)"
+LangString MainSection ${LANG_TRADCHINESE} "${APPNAME}（必要）"
+LangString MainSection ${LANG_JAPANESE} "${APPNAME}（必須）"
+LangString PathSection ${LANG_ENGLISH} "Add to system PATH"
+LangString PathSection ${LANG_TRADCHINESE} "加入系統 PATH"
+LangString PathSection ${LANG_JAPANESE} "システム PATH に追加"
+LangString DesktopSection ${LANG_ENGLISH} "Desktop shortcut"
+LangString DesktopSection ${LANG_TRADCHINESE} "桌面捷徑"
+LangString DesktopSection ${LANG_JAPANESE} "デスクトップのショートカット"
+LangString MainDescription ${LANG_ENGLISH} "The application, Start Menu shortcuts and uninstaller."
+LangString MainDescription ${LANG_TRADCHINESE} "應用程式、開始功能表捷徑及解除安裝程式。"
+LangString MainDescription ${LANG_JAPANESE} "アプリ、スタートメニューのショートカット、アンインストーラー。"
+LangString PathDescription ${LANG_ENGLISH} "Add the install folder to the system PATH so rust-transfer-gui can be started from any terminal."
+LangString PathDescription ${LANG_TRADCHINESE} "將安裝資料夾加入系統 PATH，即可從終端機啟動 rust-transfer-gui。"
+LangString PathDescription ${LANG_JAPANESE} "インストール先をシステム PATH に追加し、端末から rust-transfer-gui を起動できるようにします。"
+LangString DesktopDescription ${LANG_ENGLISH} "Create a shortcut on the desktop."
+LangString DesktopDescription ${LANG_TRADCHINESE} "在桌面建立捷徑。"
+LangString DesktopDescription ${LANG_JAPANESE} "デスクトップにショートカットを作成します。"
+LangString RequiresX64 ${LANG_ENGLISH} "${APPNAME} requires 64-bit Windows."
+LangString RequiresX64 ${LANG_TRADCHINESE} "${APPNAME} 需要 64 位元 Windows。"
+LangString RequiresX64 ${LANG_JAPANESE} "${APPNAME} には 64 ビット Windows が必要です。"
 
 ; ---------------------------------------------------------------- sections
-Section "!${APPNAME} (required)" SecMain
+Section "!$(MainSection)" SecMain
   SectionIn RO
   SetShellVarContext all
   SetOutPath "$INSTDIR"
@@ -99,7 +130,7 @@ Section "!${APPNAME} (required)" SecMain
   WriteRegDWORD HKLM "${UNINSTKEY}" "EstimatedSize" $0
 SectionEnd
 
-Section "Add to system PATH" SecPath
+Section "$(PathSection)" SecPath
   DetailPrint "Adding $INSTDIR to the system PATH..."
   ${DisableX64FSRedirection} ; use the 64-bit Windows PowerShell
   nsExec::ExecToLog '"${PS_EXE}" ${PS_ARGS} "$INSTDIR\path-helper.ps1" -Action Add -Dir "$INSTDIR"'
@@ -114,15 +145,15 @@ Section "Add to system PATH" SecPath
   ${EndIf}
 SectionEnd
 
-Section /o "Desktop shortcut" SecDesktop
+Section /o "$(DesktopSection)" SecDesktop
   SetShellVarContext all
   CreateShortcut "$DESKTOP\${APPNAME}.lnk" "$INSTDIR\${EXENAME}"
 SectionEnd
 
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecMain} "The application, Start Menu shortcuts and uninstaller."
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecPath} "Add the install folder to the system PATH so rust-transfer-gui can be started from any terminal."
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecDesktop} "Create a shortcut on the desktop."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecMain} "$(MainDescription)"
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecPath} "$(PathDescription)"
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecDesktop} "$(DesktopDescription)"
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
 ; ---------------------------------------------------------------- uninstaller
@@ -157,8 +188,11 @@ SectionEnd
 
 ; ---------------------------------------------------------------- init
 Function .onInit
+  StrCpy $LANGUAGE ${LANG_ENGLISH}
+  SetRegView 64
+  !insertmacro MUI_LANGDLL_DISPLAY
   ${IfNot} ${RunningX64}
-    MessageBox MB_ICONSTOP "${APPNAME} requires 64-bit Windows."
+    MessageBox MB_ICONSTOP "$(RequiresX64)"
     Abort
   ${EndIf}
   SetRegView 64
@@ -166,4 +200,5 @@ FunctionEnd
 
 Function un.onInit
   SetRegView 64
+  !insertmacro MUI_UNGETLANGUAGE
 FunctionEnd

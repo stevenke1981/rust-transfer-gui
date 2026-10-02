@@ -1,4 +1,6 @@
-//! "New session" dialog: protocol buttons across the top, settings below.
+//! language.text("New session") dialog: protocol buttons across the top, settings below.
+
+use crate::i18n::Language;
 
 use eframe::egui::{self, RichText, Vec2};
 
@@ -62,6 +64,7 @@ impl SessionDialog {
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Option<DialogResult> {
+        let language = Language::from_context(ctx);
         if !self.open {
             return None;
         }
@@ -70,7 +73,11 @@ impl SessionDialog {
         let modal = egui::Modal::new(egui::Id::new("session_dialog")).show(ctx, |ui| {
             ui.set_width(520.0);
             ui.horizontal(|ui| {
-                ui.heading(if self.editing.is_some() && self.save { "Edit session" } else { "Session settings" });
+                ui.heading(if self.editing.is_some() && self.save {
+                    language.text("Edit session")
+                } else {
+                    language.text("Session settings")
+                });
             });
             ui.add_space(6.0);
             // Protocol buttons across the top.
@@ -105,33 +112,37 @@ impl SessionDialog {
             let p = self.session.protocol;
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.label(RichText::new(format!("Basic {} settings", p.label())).strong());
+                ui.label(
+                    RichText::new(language.format("Basic {protocol} settings", &[("protocol", p.label())])).strong(),
+                );
                 egui::Grid::new("dlg_grid").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
                     let s = &mut self.session;
-                    ui.label("Remote host *");
+                    ui.label(language.text("Remote host *"));
                     ui.horizontal(|ui| {
                         ui.add(
-                            egui::TextEdit::singleline(&mut s.host).desired_width(230.0).hint_text("hostname or IP"),
+                            egui::TextEdit::singleline(&mut s.host)
+                                .desired_width(230.0)
+                                .hint_text(language.text("hostname or IP")),
                         );
-                        ui.label("Port");
+                        ui.label(language.text("Port"));
                         ui.add(egui::DragValue::new(&mut s.port).range(1..=65535));
                     });
                     ui.end_row();
                     if p != Protocol::Tftp {
-                        ui.label("Username");
+                        ui.label(language.text("Username"));
                         ui.add(egui::TextEdit::singleline(&mut s.user).desired_width(230.0));
                         ui.end_row();
                     }
                     match p {
                         Protocol::Ssh | Protocol::Sftp => {
-                            ui.label("Authentication");
+                            ui.label(language.text("Authentication"));
                             ui.horizontal(|ui| {
-                                ui.radio_value(&mut s.auth, AuthMethod::Password, "Password");
-                                ui.radio_value(&mut s.auth, AuthMethod::KeyFile, "Private key");
+                                ui.radio_value(&mut s.auth, AuthMethod::Password, language.text("Password"));
+                                ui.radio_value(&mut s.auth, AuthMethod::KeyFile, language.text("Private key"));
                             });
                             ui.end_row();
                             if s.auth == AuthMethod::Password {
-                                ui.label("Password");
+                                ui.label(language.text("Password"));
                                 let r = ui.add(
                                     egui::TextEdit::singleline(&mut self.secrets.password)
                                         .password(true)
@@ -143,10 +154,10 @@ impl SessionDialog {
                                 }
                                 ui.end_row();
                             } else {
-                                ui.label("Private key file");
+                                ui.label(language.text("Private key file"));
                                 ui.horizontal(|ui| {
                                     ui.add(egui::TextEdit::singleline(&mut s.key_path).desired_width(230.0));
-                                    if ui.button("📂").on_hover_text("Browse…").clicked()
+                                    if ui.button("📂").on_hover_text(language.text("Browse…")).clicked()
                                         && let Some(f) = rfd::FileDialog::new()
                                             .set_directory(super::default_local_dir().join(".ssh"))
                                             .pick_file()
@@ -155,11 +166,11 @@ impl SessionDialog {
                                     }
                                 });
                                 ui.end_row();
-                                ui.label("Passphrase");
+                                ui.label(language.text("Passphrase"));
                                 let r = ui.add(
                                     egui::TextEdit::singleline(&mut self.secrets.passphrase)
                                         .password(true)
-                                        .hint_text("optional")
+                                        .hint_text(language.text("optional"))
                                         .desired_width(230.0),
                                 );
                                 if self.focus_password {
@@ -170,7 +181,7 @@ impl SessionDialog {
                             }
                         }
                         Protocol::Ftp => {
-                            ui.label("Password");
+                            ui.label(language.text("Password"));
                             let r = ui.add(
                                 egui::TextEdit::singleline(&mut self.secrets.password)
                                     .password(true)
@@ -182,22 +193,26 @@ impl SessionDialog {
                             }
                             ui.end_row();
                             ui.label("");
-                            ui.checkbox(&mut s.passive, "Passive mode (PASV)");
+                            ui.checkbox(&mut s.passive, language.text("Passive mode (PASV)"));
                             ui.end_row();
                         }
                         Protocol::Tftp => {
                             ui.label("");
-                            ui.weak("TFTP uses UDP, octet mode, no authentication.");
+                            ui.weak(language.text("TFTP uses UDP, octet mode, no authentication."));
                             ui.end_row();
                         }
                     }
-                    ui.label("Session name");
-                    ui.add(egui::TextEdit::singleline(&mut s.name).desired_width(230.0).hint_text("optional"));
+                    ui.label(language.text("Session name"));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut s.name)
+                            .desired_width(230.0)
+                            .hint_text(language.text("optional")),
+                    );
                     ui.end_row();
                 });
             });
             ui.add_space(4.0);
-            ui.checkbox(&mut self.save, "Save in the Sessions list (passwords are never saved)");
+            ui.checkbox(&mut self.save, language.text("Save in the Sessions list (passwords are never saved)"));
             ui.add_space(8.0);
             ui.separator();
             ui.horizontal(|ui| {
@@ -206,7 +221,9 @@ impl SessionDialog {
                         || matches!(self.session.protocol, Protocol::Ftp)
                         || !self.session.user.trim().is_empty());
                 let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if ui.add_enabled(valid, egui::Button::new(RichText::new("✔ OK").strong()).fill(ACCENT)).clicked()
+                if ui
+                    .add_enabled(valid, egui::Button::new(RichText::new(language.text("✔ OK")).strong()).fill(ACCENT))
+                    .clicked()
                     || (valid && enter)
                 {
                     let mut session = self.session.clone();
@@ -220,11 +237,11 @@ impl SessionDialog {
                     });
                     close = true;
                 }
-                if self.save && ui.add_enabled(valid, egui::Button::new("💾 Save only")).clicked() {
+                if self.save && ui.add_enabled(valid, egui::Button::new(language.text("💾 Save only"))).clicked() {
                     result = Some(DialogResult::Save { session: self.session.clone(), replace: self.editing });
                     close = true;
                 }
-                if ui.button("✖ Cancel").clicked() {
+                if ui.button(language.text("✖ Cancel")).clicked() {
                     close = true;
                 }
             });

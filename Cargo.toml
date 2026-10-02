@@ -1,6 +1,6 @@
 [package]
 name = "rust-transfer-gui"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.95"
 description = "Desktop GUI client for FTP, SFTP/SSH and TFTP file transfers (egui/eframe)"
@@ -29,6 +29,7 @@ eframe = { version = "0.36.2", default-features = false, features = [
     "x11",
 ] }
 egui = { version = "0.36.2", default-features = false }
+skrifa = "0.44.0"
 # Native file dialogs. GTK3 backend on Linux (dynamically linked, keeps the binary small);
 # Windows/macOS always use their native APIs.
 rfd = { version = "0.17.2", default-features = false, features = ["gtk3"] }
