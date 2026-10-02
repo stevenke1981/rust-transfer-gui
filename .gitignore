@@ -1,0 +1,22 @@
+# Rust build output
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo.lock is committed on purpose (this is an application).
+
+# Installer / release output
+/dist/
+
+# Local test-server data and virtualenvs
+/scripts/test-servers/.data/
+/scripts/test-servers/.venv/
+.venv/
+__pycache__/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

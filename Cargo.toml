@@ -1,0 +1,60 @@
+[package]
+name = "rust-transfer-gui"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Desktop GUI client for FTP, SFTP/SSH and TFTP file transfers (egui/eframe)"
+license = "MIT"
+authors = ["Ke Sheng Da"]
+readme = "README.md"
+keywords = ["ftp", "sftp", "tftp", "ssh", "gui"]
+categories = ["gui", "network-programming"]
+
+[lib]
+name = "rust_transfer_gui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rust-transfer-gui"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+# Only what we need: glow (OpenGL) renderer instead of wgpu, default fonts,
+# and the X11 + Wayland window backends on Linux. No accesskit, no persistence.
+eframe = { version = "0.36.2", default-features = false, features = [
+    "default_fonts",
+    "glow",
+    "wayland",
+    "x11",
+] }
+egui = { version = "0.36.2", default-features = false }
+# Native file dialogs. GTK3 backend on Linux (dynamically linked, keeps the binary small);
+# Windows/macOS always use their native APIs.
+rfd = { version = "0.17.2", default-features = false, features = ["gtk3"] }
+# libssh2 with a statically built (vendored) OpenSSL so no system OpenSSL is needed at runtime.
+ssh2 = { version = "0.9.6", features = ["vendored-openssl"] }
+# Plain FTP only (no TLS backends, no async runtimes).
+suppaftp = { version = "12.1.1", default-features = false }
+
+# On Windows, also use (vendored) OpenSSL instead of WinCNG so that Ed25519/ECDSA
+# keys and modern key exchanges work the same as on Linux/macOS.
+[target.'cfg(windows)'.dependencies]
+ssh2 = { version = "0.9.6", features = ["vendored-openssl", "openssl-on-win32"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+# Size-optimised release build. opt-level "s" measured ~3-4% smaller than "z" for this
+# app (Linux 12.4 vs 12.8 MiB, Windows 10.8 vs 11.2 MiB) and produces faster code.
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+debug = false
+
+# Backport of an upstream libssh2 heap-overflow fix; see vendor/libssh2-sys/PATCHED.md.
+[patch.crates-io]
+libssh2-sys = { path = "vendor/libssh2-sys" }
