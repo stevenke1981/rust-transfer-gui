@@ -1,6 +1,8 @@
 //! Types and helpers shared by all protocol back-ends.
 
 use std::io::{self, Read, Write};
+use std::net::TcpStream;
+use std::time::Duration;
 
 /// A single entry of a remote directory listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,6 +97,13 @@ pub fn shell_quote(s: &str) -> String {
 
 /// Resolve `host:port` into a socket address (first result).
 pub fn resolve(host: &str, port: u16) -> anyhow::Result<std::net::SocketAddr> {
+    resolve_all(host, port)?.into_iter().next().ok_or_else(|| anyhow::anyhow!("no address found for {host}"))
+}
+
+/// Resolve `host:port` to *all* of its addresses (IPv4 and IPv6, in resolver order).
+///
+/// Errors are prefixed with `DNS:` so the UI can tell which connection stage failed.
+pub fn resolve_all(host: &str, port: u16) -> anyhow::Result<Vec<std::net::SocketAddr>> {
     use std::net::ToSocketAddrs;
     let host = host.trim();
     if host.is_empty() {
@@ -106,11 +115,44 @@ pub fn resolve(host: &str, port: u16) -> anyhow::Result<std::net::SocketAddr> {
     } else {
         format!("{host}:{port}")
     };
-    target
-        .to_socket_addrs()
-        .map_err(|e| anyhow::anyhow!("cannot resolve {target}: {e}"))?
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("no address found for {target}"))
+    let addrs: Vec<_> =
+        target.to_socket_addrs().map_err(|e| anyhow::anyhow!("DNS: cannot resolve {target}: {e}"))?.collect();
+    if addrs.is_empty() {
+        anyhow::bail!("DNS: no address found for {target}");
+    }
+    Ok(addrs)
+}
+
+/// Open a TCP connection to `host:port`, trying every resolved address in turn
+/// (e.g. `localhost` → `::1` then `127.0.0.1`) until one accepts.
+///
+/// Each attempt is bounded by `timeout` (at most 10 s per address when there are
+/// several, so a black-holed IPv6 route does not stall the IPv4 fallback for long).
+/// Returns the connected stream; errors list every address that was tried.
+pub fn connect_tcp(host: &str, port: u16, timeout: Duration) -> anyhow::Result<TcpStream> {
+    let addrs = resolve_all(host, port)?;
+    let per_addr = if addrs.len() > 1 { timeout.min(Duration::from_secs(10)) } else { timeout };
+    let per_addr = per_addr.max(Duration::from_millis(100));
+    let mut failures = Vec::new();
+    for addr in &addrs {
+        match TcpStream::connect_timeout(addr, per_addr) {
+            Ok(s) => return Ok(s),
+            Err(e) => failures.push(format!("{addr}: {}", describe_io_error(&e))),
+        }
+    }
+    anyhow::bail!("TCP: cannot connect to {host}:{port} ({})", failures.join("; "))
+}
+
+/// Short, user friendly description of a socket error.
+fn describe_io_error(e: &io::Error) -> String {
+    let hint = match e.kind() {
+        io::ErrorKind::ConnectionRefused => " – nothing is listening on that port (wrong port, or server not running)",
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => {
+            " – no answer (host down, wrong address, or a firewall drops the traffic)"
+        }
+        _ => "",
+    };
+    format!("{e}{hint}")
 }
 
 #[cfg(test)]
@@ -173,5 +215,21 @@ mod tests {
         assert!(resolve("127.0.0.1", 21).is_ok());
         assert!(resolve("::1", 21).is_ok());
         assert!(resolve("", 21).is_err());
+        let all = resolve_all("localhost", 21).unwrap();
+        assert!(!all.is_empty() && all.iter().all(|a| a.port() == 21));
+    }
+
+    #[test]
+    fn connect_tcp_tries_every_address_and_reports_stage() {
+        // Bind on IPv4 only; `localhost` may resolve to ::1 first.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let s = connect_tcp("localhost", port, Duration::from_secs(2)).unwrap();
+        assert!(s.peer_addr().unwrap().ip().is_loopback());
+        drop(listener);
+        let err = connect_tcp("127.0.0.1", port, Duration::from_secs(2)).unwrap_err().to_string();
+        assert!(err.starts_with("TCP:"), "{err}");
+        let err = connect_tcp("no-such-host.invalid", 22, Duration::from_secs(2)).unwrap_err().to_string();
+        assert!(err.starts_with("DNS:"), "{err}");
     }
 }

@@ -342,8 +342,14 @@ impl SessionTab {
     fn handle(&mut self, ev: Event) {
         match ev {
             Event::Log(level, text) => {
-                if self.info.protocol == Protocol::Ssh && level == Level::Error {
-                    self.term.push(TermKind::Stderr, &text);
+                if self.info.protocol == Protocol::Ssh {
+                    if level == Level::Error {
+                        self.term.push(TermKind::Stderr, &text);
+                    } else if !self.connected && level == Level::Info && !text.starts_with("Connecting to") {
+                        // Connection diagnostics (server version, algorithms, auth methods…):
+                        // the SSH tab has no separate log panel, so show them in the terminal.
+                        self.term.push(TermKind::Info, &text);
+                    }
                 }
                 self.log(level, text);
             }

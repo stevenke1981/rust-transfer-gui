@@ -10,7 +10,7 @@ use suppaftp::list::ListParser;
 use suppaftp::types::FileType;
 use suppaftp::{FtpStream, Mode};
 
-use crate::common::{ProgressFn, RemoteEntry, copy_with_progress, resolve};
+use crate::common::{ProgressFn, RemoteEntry, connect_tcp, copy_with_progress};
 
 /// Default FTP control port.
 pub const DEFAULT_PORT: u16 = 21;
@@ -60,9 +60,8 @@ pub struct FtpClient {
 impl FtpClient {
     /// Connect, log in and switch to binary transfer type.
     pub fn connect(cfg: &FtpConfig) -> Result<Self> {
-        let addr = resolve(&cfg.host, cfg.port)?;
-        let mut stream =
-            FtpStream::connect_timeout(addr, cfg.timeout).with_context(|| format!("cannot connect to {addr}"))?;
+        let tcp = connect_tcp(&cfg.host, cfg.port, cfg.timeout)?;
+        let mut stream = FtpStream::connect_with_stream(tcp).context("FTP: no valid server greeting")?;
         let user = if cfg.username.trim().is_empty() { "anonymous" } else { cfg.username.trim() };
         stream.login(user, cfg.password.as_str()).context("login failed")?;
         stream.set_mode(if cfg.passive { Mode::Passive } else { Mode::Active });
