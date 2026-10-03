@@ -171,6 +171,10 @@ trait Session: Sized {
     fn exec(&mut self, _cmd: &str) -> anyhow::Result<CommandOutput> {
         anyhow::bail!("{} does not support remote commands", Self::NAME)
     }
+    /// False if directory listing / transfers are unavailable (SSH without SFTP).
+    fn can_browse(&self) -> bool {
+        true
+    }
     fn close(self) -> anyhow::Result<()>;
 }
 
@@ -228,6 +232,9 @@ impl Session for SshClient {
     fn exec(&mut self, cmd: &str) -> anyhow::Result<CommandOutput> {
         SshClient::exec(self, cmd)
     }
+    fn can_browse(&self) -> bool {
+        self.has_sftp()
+    }
     fn mkdir(&mut self, name: &str) -> anyhow::Result<()> {
         SshClient::mkdir(self, name)
     }
@@ -261,7 +268,7 @@ pub fn spawn_ftp(cfg: FtpConfig, waker: Waker) -> WorkerHandle {
 pub fn spawn_ssh(cfg: SshConfig, waker: Waker) -> WorkerHandle {
     spawn_session(waker, move |rep: &Reporter| {
         rep.info(format!("Connecting to ssh://{}@{}:{}…", cfg.username, cfg.host, cfg.port));
-        let client = SshClient::connect(&cfg)?;
+        let client = SshClient::connect_with_log(&cfg, &mut |line| rep.info(line))?;
         rep.info(format!("Host key fingerprint: {} (not verified against known_hosts)", client.fingerprint()));
         Ok(client)
     })
@@ -288,7 +295,9 @@ where
         };
         rep.ok(format!("{} connected", S::NAME));
         rep.send(Event::Connected(true));
-        send_listing(&mut session, &rep);
+        if session.can_browse() {
+            send_listing(&mut session, &rep);
+        }
         rep.busy(None);
 
         while let Ok(cmd) = cmd_rx.recv() {

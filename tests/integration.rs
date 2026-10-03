@@ -10,9 +10,14 @@
 //! | `RTG_SSH_KEY`             | `/path/to/id_ed25519` (optional)     |
 //! | `RTG_SSH_KEY_PASSPHRASE`  | `keypass` (optional)                 |
 //! | `RTG_SSH_KEY2`            | second key without passphrase (opt.) |
+//! | `RTG_SSH_EXPECT_SERVER`   | `OpenSSH` (optional: server banner must contain it) |
+//! | `RTG_SSH_KBD`             | server offering only keyboard-interactive (no `password`) |
+//! | `RTG_SSH_NOSFTP`          | server without an `sftp` subsystem   |
+//! | `RTG_SSH_EXTRA`           | more `host:port:user:pass` servers, `;`-separated |
 //! | `RTG_TFTP`                | `127.0.0.1:6969`                     |
 //!
-//! See `scripts/test-servers/` for small Python servers that work with these tests.
+//! See `scripts/test-servers/` for small Python servers that work with these tests and
+//! `scripts/test-servers/openssh/` for running real OpenSSH `sshd` instances (as used in CI).
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -122,26 +127,57 @@ fn ftp_bad_password_is_an_error() {
 
 // ------------------------------------------------------------------ SSH / SFTP
 
-fn ssh_cfg(auth: Option<SshAuth>) -> SshConfig {
-    let p = env_parts("RTG_SSH", 4);
+fn ssh_cfg_from(spec: &str, auth: Option<SshAuth>) -> SshConfig {
+    // host:port:user:password, host may be a bracketed IPv6 literal ("[::1]:22:u:p").
+    let (host, rest) = match spec.strip_prefix('[') {
+        Some(r) => r.split_once("]:").expect("closing ] in IPv6 spec"),
+        None => spec.split_once(':').expect("host:port:user:password"),
+    };
+    let p: Vec<&str> = rest.splitn(3, ':').collect();
+    assert_eq!(p.len(), 3, "SSH server spec must be host:port:user:password, got {spec}");
     SshConfig {
-        host: p[0].clone(),
-        port: p[1].parse().unwrap(),
-        username: p[2].clone(),
-        auth: auth.unwrap_or_else(|| SshAuth::Password(p[3].clone())),
+        host: host.to_string(),
+        port: p[0].parse().unwrap(),
+        username: p[1].to_string(),
+        auth: auth.unwrap_or_else(|| SshAuth::Password(p[2].to_string())),
         timeout: Duration::from_secs(10),
     }
 }
 
-#[test]
-#[ignore = "needs an SSH server (RTG_SSH)"]
-fn ssh_sftp_roundtrip_and_exec() {
+fn ssh_spec(var: &str) -> String {
+    env_parts(var, 4).join(":")
+}
+
+/// Optional server variants: skip (instead of failing) when the variable is not set,
+/// so `--ignored` runs against servers that only provide `RTG_SSH` still pass.
+fn optional_spec(var: &str) -> Option<String> {
+    let v = std::env::var(var).ok().filter(|v| !v.trim().is_empty());
+    if v.is_none() {
+        eprintln!("{var} not set – skipping");
+    }
+    v
+}
+
+fn ssh_cfg(auth: Option<SshAuth>) -> SshConfig {
+    ssh_cfg_from(&ssh_spec("RTG_SSH"), auth)
+}
+
+/// Connect while collecting the connection log.
+fn ssh_connect_logged(cfg: &SshConfig) -> (anyhow::Result<SshClient>, Vec<String>) {
+    let mut log = Vec::new();
+    let res = SshClient::connect_with_log(cfg, &mut |l| log.push(l));
+    (res, log)
+}
+
+fn ssh_roundtrip(cfg: &SshConfig) -> Vec<String> {
     let tmp = tempfile::tempdir().unwrap();
     let data = random_bytes(1_234_567, 2);
     let local = tmp.path().join("up.bin");
     std::fs::write(&local, &data).unwrap();
 
-    let mut c = SshClient::connect(&ssh_cfg(None)).expect("connect");
+    let (res, log) = ssh_connect_logged(cfg);
+    let mut c = res.unwrap_or_else(|e| panic!("connect {}:{}: {e:#}\nlog: {log:#?}", cfg.host, cfg.port));
+    assert!(c.has_sftp());
     assert!(c.fingerprint().starts_with("SHA256:"));
     let home = c.cwd().to_string();
     let dir = unique("rtg-sftp");
@@ -180,6 +216,30 @@ fn ssh_sftp_roundtrip_and_exec() {
     assert_eq!(out.exit_code, 0);
 
     c.disconnect().unwrap();
+    log
+}
+
+fn assert_logged(log: &[String], needle: &str) {
+    assert!(log.iter().any(|l| l.contains(needle)), "log should mention {needle:?}: {log:#?}");
+}
+
+#[test]
+#[ignore = "needs an SSH server (RTG_SSH)"]
+fn ssh_sftp_roundtrip_and_exec() {
+    let log = ssh_roundtrip(&ssh_cfg(None));
+    for needle in [
+        "TCP connected to",
+        "Server software: SSH-2.0-",
+        "Negotiated: kex ",
+        "Server offers authentication methods: ",
+        "Authenticated with method",
+    ] {
+        assert_logged(&log, needle);
+    }
+    if let Ok(expected) = std::env::var("RTG_SSH_EXPECT_SERVER") {
+        assert_logged(&log, &expected);
+    }
+    eprintln!("connection log:\n  {}", log.join("\n  "));
 }
 
 #[test]
@@ -187,7 +247,78 @@ fn ssh_sftp_roundtrip_and_exec() {
 fn ssh_wrong_password_is_an_error() {
     let p = env_parts("RTG_SSH", 4);
     let cfg = ssh_cfg(Some(SshAuth::Password(format!("{}-wrong", p[3]))));
-    assert!(SshClient::connect(&cfg).is_err());
+    let err = format!("{:#}", SshClient::connect(&cfg).err().expect("wrong password must fail"));
+    assert!(err.starts_with("Auth:"), "{err}");
+    assert!(err.contains("server offers:"), "{err}");
+}
+
+#[test]
+#[ignore = "needs a keyboard-interactive-only SSH server (RTG_SSH_KBD, skipped if unset)"]
+fn ssh_keyboard_interactive_only_server_accepts_password() {
+    let Some(spec) = optional_spec("RTG_SSH_KBD") else { return };
+    let log = ssh_roundtrip(&ssh_cfg_from(&spec, None));
+    assert_logged(&log, "Server does not offer \"password\"");
+    assert_logged(&log, "Authenticated with method \"keyboard-interactive\"");
+    eprintln!("connection log:\n  {}", log.join("\n  "));
+
+    let cfg = ssh_cfg_from(&spec, Some(SshAuth::Password("definitely-wrong".into())));
+    let err = format!("{:#}", SshClient::connect(&cfg).err().expect("wrong password must fail"));
+    assert!(err.starts_with("Auth:") && err.contains("keyboard-interactive"), "{err}");
+}
+
+#[test]
+#[ignore = "needs an SSH server without SFTP (RTG_SSH_NOSFTP, skipped if unset)"]
+fn ssh_server_without_sftp_still_runs_commands() {
+    let Some(spec) = optional_spec("RTG_SSH_NOSFTP") else { return };
+    let cfg = ssh_cfg_from(&spec, None);
+    let (res, log) = ssh_connect_logged(&cfg);
+    let mut c = res.unwrap_or_else(|e| panic!("connect: {e:#}\nlog: {log:#?}"));
+    assert!(!c.has_sftp());
+    assert_logged(&log, "SFTP: subsystem not available");
+    let err = format!("{:#}", c.list().unwrap_err());
+    assert!(err.contains("SFTP is not available"), "{err}");
+    assert_eq!(c.exec("echo still-works").unwrap().stdout, "still-works\n");
+    c.disconnect().unwrap();
+}
+
+#[test]
+#[ignore = "needs SSH servers (RTG_SSH_EXTRA, skipped if unset)"]
+fn ssh_extra_servers_roundtrip() {
+    let Some(specs) = optional_spec("RTG_SSH_EXTRA") else { return };
+    for spec in specs.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+        let cfg = ssh_cfg_from(spec, None);
+        let log = ssh_roundtrip(&cfg);
+        let info: Vec<_> =
+            log.iter().filter(|l| l.starts_with("Negotiated") || l.starts_with("Server software")).cloned().collect();
+        eprintln!("{}:{}: {}", cfg.host, cfg.port, info.join(" / "));
+    }
+}
+
+#[test]
+fn ssh_closed_port_reports_tcp_stage() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let cfg = ssh_cfg_from(&format!("127.0.0.1:{port}:u:p"), None);
+    let err = format!("{:#}", SshClient::connect(&cfg).err().expect("must fail"));
+    assert!(err.starts_with("TCP:"), "{err}");
+}
+
+#[test]
+fn ssh_non_ssh_server_reports_handshake_stage() {
+    // A TCP server that immediately closes the connection, like a wrong port / refusing sshd.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let t = std::thread::spawn(move || {
+        if let Ok((mut s, _)) = listener.accept() {
+            use std::io::Write;
+            let _ = s.write_all(b"220 hello, I am not SSH\r\n");
+        }
+    });
+    let cfg = ssh_cfg_from(&format!("127.0.0.1:{port}:u:p"), None);
+    let err = format!("{:#}", SshClient::connect(&cfg).err().expect("must fail"));
+    assert!(err.starts_with("SSH handshake:") && err.contains("libssh2 error"), "{err}");
+    t.join().unwrap();
 }
 
 #[test]
@@ -203,7 +334,8 @@ fn ssh_key_auth() {
 
     if passphrase.is_some() {
         let bad = SshAuth::KeyFile { path: key, passphrase: Some("definitely-wrong".into()) };
-        assert!(SshClient::connect(&ssh_cfg(Some(bad))).is_err());
+        let err = format!("{:#}", SshClient::connect(&ssh_cfg(Some(bad))).err().expect("bad passphrase must fail"));
+        assert!(err.starts_with("Auth:"), "{err}");
     }
     if let Ok(k2) = std::env::var("RTG_SSH_KEY2") {
         let mut c = SshClient::connect(&ssh_cfg(Some(SshAuth::KeyFile { path: k2.into(), passphrase: None })))

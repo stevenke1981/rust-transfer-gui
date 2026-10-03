@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "release/**"]
   pull_request:
   workflow_dispatch:
 
@@ -76,3 +76,40 @@ jobs:
           export RTG_SSH_KEY2=$PWD/scripts/test-servers/.data/client_rsa
           cargo test --locked --test integration -- --ignored --test-threads=1
           cargo test --locked --lib -- --ignored
+
+  openssh:
+    name: End-to-end SSH tests against real OpenSSH (password, keyboard-interactive only, no SFTP, strict algorithms)
+    runs-on: ubuntu-latest
+    env:
+      RTG_PW: "Rtg-test-Pa55word"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies and OpenSSH server
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libssl-dev libgtk-3-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libgl1-mesa-dev \
+            openssh-server openssh-sftp-server
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Create test user and start sshd instances
+        run: |
+          sudo useradd -m -s /bin/bash rtgtest
+          echo "rtgtest:$RTG_PW" | sudo chpasswd
+          ssh-keygen -q -t ed25519 -N keypass -f "$RUNNER_TEMP/client_ed25519"
+          ssh-keygen -q -t rsa -b 3072 -N '' -f "$RUNNER_TEMP/client_rsa"
+          sudo install -d -o rtgtest -g rtgtest -m 700 /home/rtgtest/.ssh
+          cat "$RUNNER_TEMP"/client_*.pub | sudo install -o rtgtest -g rtgtest -m 600 /dev/stdin /home/rtgtest/.ssh/authorized_keys
+          sudo mkdir -p /run/sshd
+          sudo scripts/test-servers/openssh/start-sshd.sh /tmp/rtg-sshd
+      - name: Run SSH integration tests against OpenSSH
+        run: |
+          export RTG_SSH="localhost:2201:rtgtest:$RTG_PW" RTG_SSH_EXPECT_SERVER=OpenSSH
+          export RTG_SSH_KBD="127.0.0.1:2202:rtgtest:$RTG_PW"
+          export RTG_SSH_NOSFTP="127.0.0.1:2203:rtgtest:$RTG_PW"
+          export RTG_SSH_EXTRA="127.0.0.1:2204:rtgtest:$RTG_PW;127.0.0.1:2205:rtgtest:$RTG_PW"
+          export RTG_SSH_KEY="$RUNNER_TEMP/client_ed25519" RTG_SSH_KEY_PASSPHRASE=keypass RTG_SSH_KEY2="$RUNNER_TEMP/client_rsa"
+          cargo test --locked --test integration ssh -- --ignored --test-threads=1 --nocapture
+      - name: sshd logs
+        if: always()
+        run: sudo sh -c 'tail -n 40 /tmp/rtg-sshd/*.log' || true

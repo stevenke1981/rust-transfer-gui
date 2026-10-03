@@ -37,7 +37,9 @@ them and uses no third-party assets.
 * **SFTP / Files sidebar** – browse the remote directory of the active SSH/SFTP/FTP tab:
   name, size, modification time; up, refresh, upload, download, new folder and delete
   (with confirmation). Double-click folders to enter them.
-* **SSH** (via `ssh2`/libssh2): password or private-key authentication (optional passphrase),
+* **SSH** (via `ssh2`/libssh2): password or private-key authentication (optional passphrase).
+  Passwords also work on servers that only offer `keyboard-interactive` (the common
+  OpenSSH/PAM setup); servers without an SFTP subsystem still get the terminal. Features
   a dark terminal-style panel (monospace, black background, green prompt) that runs each
   command over an SSH exec channel and shows stdout, stderr (red) and non-zero exit codes.
   `cd` is emulated so the working directory persists between commands; ↑/↓ history,
@@ -221,8 +223,29 @@ cargo test --lib -- --ignored   # slow TFTP block-number wraparound test (~33 Mi
 cargo clippy --all-targets
 ```
 
-End-to-end tests against real servers (FTP: pyftpdlib, SSH/SFTP: AsyncSSH, TFTP: tftpy) are
-described in [`scripts/test-servers/README.md`](scripts/test-servers/README.md) and run in CI.
+End-to-end tests against real servers (FTP: pyftpdlib, SSH/SFTP: AsyncSSH **and real OpenSSH
+`sshd`** – password, keyboard-interactive-only, no-SFTP and strict-algorithm configurations –,
+TFTP: tftpy) are described in [`scripts/test-servers/README.md`](scripts/test-servers/README.md)
+and run in CI.
+
+## Troubleshooting SSH connections
+
+The session log (and the SSH terminal) shows every connection stage, e.g.
+
+```text
+TCP connected to 192.168.1.10:22
+Server software: SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.5
+Negotiated: kex curve25519-sha256, host key ecdsa-sha2-nistp256, cipher chacha20-poly1305@openssh.com, mac implicit (AEAD)
+Server offers authentication methods: publickey,keyboard-interactive
+Server does not offer "password"; using "keyboard-interactive" with the password
+Authenticated with method "keyboard-interactive"
+```
+
+Errors start with the stage that failed – `DNS:`, `TCP:`, `SSH handshake:`, `Auth:` – and
+include the libssh2 error name/code, the authentication methods the server offers and a hint
+(e.g. "nothing is listening on that port", "no common algorithm", "the server does not allow
+password logins (it offers: publickey)"). PuTTY `.ppk` keys are not supported: export them
+from PuTTYgen as an OpenSSH key.
 
 ## Limitations
 
@@ -259,6 +282,11 @@ Linux 需先安裝：`build-essential perl pkg-config libssl-dev libgtk-3-dev li
 安裝程式會安裝到 `C:\Program Files\Rust Transfer GUI`、建立開始功能表捷徑（桌面捷徑可選），
 並（預設）將安裝目錄加入**系統 PATH**（避免重複、保留既有的 `%變數%`，並廣播環境變數變更）；
 解除安裝時會一併移除 PATH 項目。安裝後即可在新的終端機輸入 `rust-transfer-gui` 啟動。
+
+**SSH 連線問題：** 工作階段記錄會列出每個連線階段（TCP、伺服器版本、協商的演算法、伺服器提供的驗證方式）。
+錯誤訊息以失敗階段開頭（`DNS:`、`TCP:`、`SSH handshake:`、`Auth:`），並附上 libssh2 錯誤碼與提示。
+伺服器只提供 `keyboard-interactive`（常見的 OpenSSH + PAM 設定）時，會自動改用 keyboard-interactive 送出密碼；
+沒有 SFTP 子系統的伺服器仍可使用終端機。PuTTY `.ppk` 金鑰需先在 PuTTYgen 匯出為 OpenSSH 格式。
 
 **使用：** 按工具列的「Session」（或 Ctrl+N），在對話框上方選擇協定，輸入主機、連接埠、帳號與密碼／金鑰後按 OK。
 儲存的連線設定位於 `~/.config/rust-transfer-gui/sessions.conf`（Windows 為 `%APPDATA%\rust-transfer-gui\sessions.conf`），其中不含任何密碼。
